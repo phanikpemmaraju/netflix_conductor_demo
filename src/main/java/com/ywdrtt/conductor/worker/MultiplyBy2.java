@@ -1,34 +1,41 @@
 package com.ywdrtt.conductor.worker;
 
-import com.netflix.conductor.client.worker.Worker;
-import com.netflix.conductor.common.metadata.tasks.Task;
-import com.netflix.conductor.common.metadata.tasks.TaskResult;
 
+import com.ywdrtt.conductor.worker.abstractions.ConductorWorker;
+import com.ywdrtt.conductor.worker.abstractions.TaskHandler;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
 
-        import com.netflix.conductor.client.worker.Worker;
-        import com.netflix.conductor.common.metadata.tasks.Task;
-        import com.netflix.conductor.common.metadata.tasks.TaskResult;
+import java.util.Map;
 
-public class MultiplyBy2 implements Worker {
+@Slf4j
+@Component
+@ConductorWorker("multiplyby2")
+public class MultiplyBy2 {
 
-    private final String taskDefName;
+    @TaskHandler
+    public Map<String, Object> handle(Map<String, Object> input) {
+        Integer inputNum;
+        try {
+            log.info("MultipleBy2 input: {} ", input);
+            Object raw = input.get("added");
 
-    public MultiplyBy2(String taskDefName) {
-        this.taskDefName = taskDefName;
-    }
+            if (raw instanceof String) {
+                inputNum = Integer.parseInt((String) raw);
+            } else if (raw instanceof Number) {
+                inputNum = ((Number) raw).intValue();
+            } else {
+                throw new IllegalArgumentException("Input 'added' must be a number.");
+            }
 
-    @Override
-    public String getTaskDefName() {
-        return taskDefName;
-    }
+        } catch (Exception e) {
+            log.error("Invalid input: {}", input.get("added"), e);
+            throw e;
+        }
 
-    @Override
-    public TaskResult execute(Task task) {
-        TaskResult result = new TaskResult(task);
-        Integer num1 = (Integer) task.getInputData().get("added");
-        result.addOutputData("mb2", (num1)*2);
+        int result = inputNum * 2;
+        log.info("multiplyby2: {} * 2 = {}", result, result);
 
-        result.setStatus(TaskResult.Status.COMPLETED);
-        return result;
+        return Map.of("mb2", result);
     }
 }

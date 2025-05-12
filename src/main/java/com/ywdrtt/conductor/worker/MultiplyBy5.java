@@ -1,30 +1,40 @@
 package com.ywdrtt.conductor.worker;
 
-import com.netflix.conductor.client.worker.Worker;
-import com.netflix.conductor.common.metadata.tasks.Task;
-import com.netflix.conductor.common.metadata.tasks.TaskResult;
+import com.ywdrtt.conductor.worker.abstractions.ConductorWorker;
+import com.ywdrtt.conductor.worker.abstractions.TaskHandler;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
 
+import java.util.Map;
 
-public class MultiplyBy5 implements Worker {
+@Slf4j
+@Component
+@ConductorWorker("multiplyby5")
+public class MultiplyBy5 {
 
-    private final String taskDefName;
+    @TaskHandler
+    public Map<String, Object> handle(Map<String, Object> input) {
+        Integer inputNum;
+        try {
+            log.info("MultipleBy5 input: {} ", input);
+            Object raw = input.get("doubled");
 
-    public MultiplyBy5(String taskDefName) {
-        this.taskDefName = taskDefName;
-    }
+            if (raw instanceof String) {
+                inputNum = Integer.parseInt((String) raw);
+            } else if (raw instanceof Number) {
+                inputNum = ((Number) raw).intValue();
+            } else {
+                throw new IllegalArgumentException("Input 'doubled' must be a number.");
+            }
 
-    @Override
-    public String getTaskDefName() {
-        return taskDefName;
-    }
+        } catch (Exception e) {
+            log.error("Invalid input: {}", input.get("doubled"), e);
+            throw e;
+        }
 
-    @Override
-    public TaskResult execute(Task task) {
-        TaskResult result = new TaskResult(task);
-        Integer num1 = (Integer) task.getInputData().get("doubled");
+        int result = inputNum * 5;
+        log.info("multiplyby5: {} * 5 = {}", result, result);
 
-        result.addOutputData("mb5", num1*5);
-        result.setStatus(TaskResult.Status.COMPLETED);
-        return result;
+        return Map.of("mb5", result);
     }
 }

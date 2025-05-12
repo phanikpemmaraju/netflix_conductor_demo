@@ -1,32 +1,24 @@
 package com.ywdrtt.conductor.worker;
 
-import com.netflix.conductor.client.worker.Worker;
-import com.netflix.conductor.common.metadata.tasks.Task;
-import com.netflix.conductor.common.metadata.tasks.TaskResult;
+import com.ywdrtt.conductor.worker.abstractions.ConductorWorker;
+import com.ywdrtt.conductor.worker.abstractions.TaskHandler;
+import lombok.extern.slf4j.Slf4j;
 
-public class AddNumbersWorker implements Worker {
+import org.springframework.stereotype.Component;
 
-    private final String taskDefName;
+import java.util.Map;
 
-    public AddNumbersWorker(String taskDefName) {
-        this.taskDefName = taskDefName;
+@Slf4j
+@Component
+@ConductorWorker("addnumbers")
+public class AddNumbersWorker {
+
+    @TaskHandler
+    public Map<String, Object> thisCanBeAnything(Map<String, Object> input) {
+        int sum = Integer.parseInt((String) input.get("num1")) +
+                Integer.parseInt((String) input.get("num2"));
+
+        log.info("Handled add numbers task: {} + {} = {}", input.get("num1"), input.get("num2"), sum);
+        return Map.of("addition", sum);
     }
-
-    @Override
-    public String getTaskDefName() {
-        return taskDefName;
-    }
-
-    @Override
-    public TaskResult execute(Task task) {
-        TaskResult result = new TaskResult(task);
-        String num1 = (String) task.getInputData().get("num1");
-        String num2 = (String) task.getInputData().get("num2");
-
-        result.addOutputData("addition", Integer.parseInt(num1) +
-                Integer.parseInt(num2));
-        result.setStatus(TaskResult.Status.COMPLETED);
-        return result;
-    }
-
 }
