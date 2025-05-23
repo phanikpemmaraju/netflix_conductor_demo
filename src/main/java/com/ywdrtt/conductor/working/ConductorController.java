@@ -132,7 +132,7 @@ public class ConductorAccessController {
         return "Access granted to queue admin resource for admin";
     }
 
-    @PostMapping("/queue-admin-resource")
+        @PostMapping("/queue-admin-resource")
     @PreAuthorize("hasPermission('queue-admin', T(com.yourcompany.yourconductorapp.security.ConductorPermission).CREATE)") // Example, could be MANAGE or ADMIN
     public String createQueueAdminResource() {
         return "Access granted to create queue admin resource for admin";
