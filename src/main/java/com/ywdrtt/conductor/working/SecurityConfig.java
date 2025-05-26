@@ -35,8 +35,7 @@ public class SecurityConfig {
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
-        http
-                .csrf(AbstractHttpConfigurer::disable) // Disable CSRF for API-only applications
+        http.csrf(AbstractHttpConfigurer::disable) // Disable CSRF for API-only applications
                 .authorizeHttpRequests(auth -> auth
                         // Permit all requests to Swagger/OpenAPI documentation
                         .requestMatchers("/swagger-ui/**", "/v3/api-docs/**", "/webjars/**", "/swagger-resources/**").permitAll()
