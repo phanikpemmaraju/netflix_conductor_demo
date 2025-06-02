@@ -1,0 +1,20 @@
+package com.ywdrtt.conductor.secuity;
+
+public enum Permission {
+    RESOURCE_CREATE,
+    RESOURCE_READ,
+    RESOURCE_UPDATE,
+    RESOURCE_DELETE,
+    WORKFLOW_VIEW,
+    WORKFLOW_EXECUTE,
+    WORKFLOW_POLL,
+    METADATA_READ,
+    METADATA_UPDATE,
+    METADATA_DELETE,
+    APPLICATION_CREATE,
+    APPLICATION_MANAGE,
+    USER_MANAGE,
+    GROUP_MANAGE,
+    SECRET_READ,
+    ANY
+}
