@@ -1,9 +1,5 @@
-package com.ywdrtt.conductor.secuity;
+package com.yourcompany.app.security;
 
-package com.yourcompany.app.config;
-
-import com.yourcompany.app.security.CustomPermissionEvaluator;
-import com.yourcompany.app.security.JwtTokenConverterConfig;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -22,7 +18,7 @@ import org.springframework.security.access.expression.method.MethodSecurityExpre
 
 @Configuration
 @EnableWebSecurity
-@EnableMethodSecurity(prePostEnabled = true)
+@EnableMethodSecurity(prePostEnabled = true) // Enable @PreAuthorize and @PostAuthorize
 public class SecurityConfig {
 
     private final SecurityRulesConfig securityRulesConfig;
@@ -44,6 +40,8 @@ public class SecurityConfig {
 
                         if (rule.isPermitAll()) {
                             authorize.requestMatchers(pathMatcher).permitAll();
+                        } else if (rule.isAuthenticated()) {
+                            authorize.requestMatchers(pathMatcher).authenticated();
                         } else if (!rule.getMethods().isEmpty()) {
                             for (String method : rule.getMethods()) {
                                 authorize.requestMatchers(new AntPathRequestMatcher(rule.getPath(), method))
@@ -52,12 +50,14 @@ public class SecurityConfig {
                         } else if (!rule.getRoles().isEmpty()) {
                             authorize.requestMatchers(pathMatcher).hasAnyRole(rule.getRolesArray());
                         } else {
+                            // If a path is defined but has no permitAll, authenticated, or roles specified, default to authenticated
                             authorize.requestMatchers(pathMatcher).authenticated();
                         }
                     }
 
-                    authorize
-                            .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+                    // Always allow OPTIONS requests for CORS pre-flight
+                    authorize.requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+                            // Any other request not explicitly covered by the rules must be authenticated
                             .anyRequest().authenticated();
                 })
                 .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> jwt.jwtAuthenticationConverter(jwtAuthenticationConverter())));
@@ -74,6 +74,9 @@ public class SecurityConfig {
 
     @Bean
     public Converter<Jwt, AbstractAuthenticationToken> jwtAuthenticationConverter() {
+        // This is crucial for mapping external JWT roles (e.g., microtx_admin_role)
+        // to Spring Security internal roles (e.g., "ADMIN" or "ROLE_ADMIN").
+        // Ensure your JwtTokenConverterConfig maps these correctly.
         JwtAuthenticationConverter converter = new JwtAuthenticationConverter();
         converter.setJwtGrantedAuthoritiesConverter(new JwtTokenConverterConfig(securityRulesConfig).jwtGrantedAuthoritiesConverter());
         return converter;
