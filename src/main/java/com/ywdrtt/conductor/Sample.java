@@ -1,446 +1,546 @@
-// src/main/java/com/netflix/conductor/security/workflowacl/service/WorkflowAuthorizationService.java
-package com.netflix.conductor.security.workflowacl.service;
+// src/main/java/com/netflix/conductor/security/config/EndpointRule.java
+package com.netflix.conductor.security.config;
 
-import com.netflix.conductor.dao.MetadataDAO; // Conductor's existing MetadataDAO
-import com.netflix.conductor.model.WorkflowModel; // Needed to get workflow name/version from instance ID
-import com.netflix.conductor.service.WorkflowService; // To fetch WorkflowModel by instance ID
-import com.netflix.conductor.security.workflowacl.dao.AuthorizationDAO;
-import com.netflix.conductor.security.workflowacl.model.PermissionLevel;
-import com.netflix.conductor.security.workflowacl.model.WorkflowAclEntity;
-import com.netflix.conductor.common.metadata.workflow.WorkflowDef; // Used in definitions
+import java.util.ArrayList;
+import java.util.List;
 
-import org.springframework.beans.factory.annotation.Autowired;
+/**
+ * Represents a single security rule defined in application.properties.
+ * This class is used by SecurityRulesConfig to bind properties.
+ */
+public class EndpointRule {
+    private String path;
+    private List<String> methods = new ArrayList<>(); // e.g., ["GET", "POST"]
+    private List<String> roles = new ArrayList<>();   // e.g., ["ADMIN", "READ_ONLY_USER"]
+
+    public String getPath() {
+        return path;
+    }
+
+    public void setPath(String path) {
+        this.path = path;
+    }
+
+    public List<String> getMethods() {
+        return methods;
+    }
+
+    public void setMethods(List<String> methods) {
+        this.methods = methods;
+    }
+
+    public List<String> getRoles() {
+        return roles;
+    }
+
+    public void voidsetRoles(List<String> roles) {
+        this.roles = roles;
+    }
+
+    @Override
+    public String toString() {
+        return "EndpointRule{" +
+                "path='" + path + '\'' +
+                ", methods=" + methods +
+                ", roles=" + roles +
+                '}';
+    }
+}
+```java
+// src/main/java/com/netflix/conductor/security/config/SecurityRulesConfig.java
+package com.netflix.conductor.security.config;
+
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.stereotype.Component;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * ConfigurationProperties bean to read security rules from application.properties.
+ * Properties are prefixed with "conductor.security".
+ *
+ * Example properties:
+ * conductor.security.rules[0].path=/api/admin/**
+ * conductor.security.rules[0].roles=${conductor.security.role.admin}
+ * conductor.security.rules[0].methods=GET,POST,PUT,DELETE
+ *
+ * conductor.security.role.admin=ADMIN
+ * conductor.security.role.read_only_user=READ_ONLY_USER
+ */
+@Component
+@ConfigurationProperties(prefix = "conductor.security")
+public class SecurityRulesConfig {
+
+    private List<EndpointRule> rules = new ArrayList<>();
+    private Map<String, String> role = new HashMap<>(); // Maps property keys to actual role strings
+
+    // Claims is not directly used for this permission evaluation, but kept as per your original structure.
+    private Claims claims = new Claims();
+
+    public List<EndpointRule> getRules() {
+        return rules;
+    }
+
+    public void setRules(List<EndpointRule> rules) {
+        this.rules = rules;
+    }
+
+    public Map<String, String> getRole() {
+        return role;
+    }
+
+    public void setRole(Map<String, String> role) {
+        this.role = role;
+    }
+
+    public Claims getClaims() {
+        return claims;
+    }
+
+    public void setClaims(Claims claims) {
+        this.claims = claims;
+    }
+
+    // Nested Claims class (if it's part of this file)
+    public static class Claims {
+        // Define properties for claims if any, e.g.,
+        // private String defaultClaim;
+        // public String getDefaultClaim() { return defaultClaim; }
+        // public void setDefaultClaim(String defaultClaim) { this.defaultClaim = defaultClaim; }
+    }
+}
+```java
+// src/main/java/com/netflix/conductor/security/evaluator/ConductorPermissionEvaluator.java
+package com.netflix.conductor.security.evaluator;
+
+import com.netflix.conductor.security.config.ConductorPermission;
+import com.netflix.conductor.security.config.EndpointRule;
+import com.netflix.conductor.security.config.SecurityRulesConfig;
+import org.springframework.security.access.PermissionEvaluator;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
-import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.oauth2.jwt.Jwt;
-import org.springframework.stereotype.Service;
+import org.springframework.security.web.util.matcher.AntPathRequestMatcher;
+import org.springframework.stereotype.Component;
+import org.springframework.util.AntPathMatcher;
 
-import java.util.Collections;
+import java.io.Serializable;
+import java.util.Collection;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
+
+/**
+ * Custom PermissionEvaluator for Spring Security's @PreAuthorize annotation.
+ * This evaluator checks if a user has the necessary roles to perform a specific
+ * ConductorPermission (READ, CREATE, UPDATE, DELETE) on a given resource path.
+ */
+@Component
+public class ConductorPermissionEvaluator implements PermissionEvaluator {
+
+    private final SecurityRulesConfig securityRulesConfig;
+    private final AntPathMatcher antPathMatcher = new AntPathMatcher();
+
+    public ConductorPermissionEvaluator(SecurityRulesConfig securityRulesConfig) {
+        this.securityRulesConfig = securityRulesConfig;
+    }
+
+    /**
+     * Checks if the authenticated user has permission to access a specific object.
+     * This method is called by @PreAuthorize("hasPermission(#object, #permission)")
+     *
+     * @param authentication The current user's authentication object.
+     * @param targetDomainObject The object being secured (in our case, the API path as a String).
+     * @param permission The permission required (e.g., "READ", "CREATE", "UPDATE", "DELETE").
+     * @return true if the user has permission, false otherwise.
+     */
+    @Override
+    public boolean hasPermission(Authentication authentication, Object targetDomainObject, Object permission) {
+        if (authentication == null || !authentication.isAuthenticated()) {
+            return false; // Not authenticated
+        }
+
+        if (!(targetDomainObject instanceof String)) {
+            // The targetDomainObject should be the API path as a String
+            return false;
+        }
+
+        String apiPath = (String) targetDomainObject;
+        ConductorPermission requiredPermission;
+
+        if (permission instanceof String) {
+            try {
+                requiredPermission = ConductorPermission.valueOf(((String) permission).toUpperCase());
+            } catch (IllegalArgumentException e) {
+                // Invalid permission string
+                return false;
+            }
+        } else if (permission instanceof ConductorPermission) {
+            requiredPermission = (ConductorPermission) permission;
+        } else {
+            // Unsupported permission type
+            return false;
+        }
+
+        // Get the roles/authorities of the authenticated user
+        Set<String> userRoles = authentication.getAuthorities().stream()
+                .map(GrantedAuthority::getAuthority)
+                // Assuming roles are prefixed with "ROLE_", remove it for comparison with config roles
+                .map(role -> role.startsWith("ROLE_") ? role.substring(5) : role)
+                .collect(Collectors.toSet());
+
+        // Log user roles for debugging
+        System.out.println("Checking permission for path: " + apiPath + ", required permission: " + requiredPermission + ", User roles: " + userRoles);
+
+        // Iterate through the configured security rules
+        for (EndpointRule rule : securityRulesConfig.getRules()) {
+            // Check if the API path matches the rule's path pattern
+            if (antPathMatcher.match(rule.getPath(), apiPath)) {
+                // Convert rule's HTTP methods to ConductorPermissions
+                Set<ConductorPermission> rulePermissions = ConductorPermission.fromHttpMethods(rule.getMethods());
+
+                // Check if the rule's permissions include the required permission
+                if (rulePermissions.contains(requiredPermission)) {
+                    // Check if any of the user's roles match the roles defined in this rule
+                    Set<String> allowedRolesForRule = new HashSet<>();
+                    for (String configuredRoleKey : rule.getRoles()) {
+                        // Resolve the actual role string from the role map
+                        String actualRole = securityRulesConfig.getRole().getOrDefault(configuredRoleKey, configuredRoleKey);
+                        allowedRolesForRule.add(actualRole);
+                    }
+
+                    // Check for intersection of user roles and allowed roles for this rule
+                    boolean hasMatchingRole = userRoles.stream()
+                            .anyMatch(allowedRolesForRule::contains);
+
+                    if (hasMatchingRole) {
+                        System.out.println("Permission GRANTED for path: " + apiPath + ", permission: " + requiredPermission + ", by rule: " + rule.getPath());
+                        return true; // User has permission based on this rule
+                    }
+                }
+            }
+        }
+
+        System.out.println("Permission DENIED for path: " + apiPath + ", permission: " + requiredPermission);
+        return false; // No matching rule found or user doesn't have required roles
+    }
+
+    /**
+     * This overloaded method is typically used when the target object is an instance
+     * of a domain object with an ID. Not used in this specific scenario where
+     * targetDomainObject is a String path.
+     */
+    @Override
+    public boolean hasPermission(Authentication authentication, Serializable targetId, String targetType, Object permission) {
+        // Not used in this implementation, as we are securing based on path string.
+        return false;
+    }
+}
+```java
+// src/main/java/com/netflix/conductor/security/config/SecurityConfig.java
+package com.netflix.conductor.security.config;
+
+import com.netflix.conductor.security.evaluator.ConductorPermissionEvaluator;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.access.expression.method.DefaultMethodSecurityExpressionHandler;
+import org.springframework.security.access.expression.method.MethodSecurityExpressionHandler;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.context.annotation.Bean;
+
+/**
+ * Spring Security configuration to enable method security and register the custom PermissionEvaluator.
+ */
+@Configuration
+@EnableWebSecurity
+@EnableMethodSecurity // Enables @PreAuthorize, @PostAuthorize, etc.
+public class SecurityConfig {
+
+    private final ConductorPermissionEvaluator conductorPermissionEvaluator;
+
+    public SecurityConfig(ConductorPermissionEvaluator conductorPermissionEvaluator) {
+        this.conductorPermissionEvaluator = conductorPermissionEvaluator;
+    }
+
+    /**
+     * Configures the method security expression handler to use our custom PermissionEvaluator.
+     * This is crucial for @PreAuthorize("hasPermission(...)") to work.
+     */
+    @Bean
+    public MethodSecurityExpressionHandler methodSecurityExpressionHandler() {
+        DefaultMethodSecurityExpressionHandler expressionHandler = new DefaultMethodSecurityExpressionHandler();
+        expressionHandler.setPermissionEvaluator(conductorPermissionEvaluator);
+        return expressionHandler;
+    }
+
+    /**
+     * Configures the HTTP security filter chain.
+     * You might already have this configured in your application.
+     * This example disables CSRF for simplicity and allows all requests for demonstration,
+     * as method security will handle the fine-grained authorization.
+     */
+    @Bean
+    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+        http
+                .csrf(AbstractHttpConfigurer::disable) // Disable CSRF for simpler API testing
+                .authorizeHttpRequests(authorize -> authorize
+                        .anyRequest().authenticated() // All requests require authentication
+                )
+                .oauth2ResourceServer(oauth2 -> oauth2
+                        .jwt(jwt -> {
+                            // Your JWT configuration here.
+                            // For example, if you have a custom JwtGrantedAuthoritiesConverter:
+                            // jwt.jwtAuthenticationConverter(yourCustomJwtAuthenticationConverter);
+                        })
+                );
+        return http.build();
+    }
+}
+```java
+// src/main/java/com/netflix/conductor/security/config/JwtTokenConverterConfig.java
+package com.netflix.conductor.security.config;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
+import org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter;
+
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
-@Service("workflowAuthorization") // Named for @PreAuthorize SpEL expression access
-public class WorkflowAuthorizationService {
+/**
+ * Illustrative configuration for your JwtTokenConverter.
+ * This ensures that your JWT claims (e.g., from 'realm_access.roles' or 'resource_access.account.roles')
+ * are correctly mapped to Spring Security's GrantedAuthority objects.
+ *
+ * It's crucial that the roles extracted here match the 'actual role strings'
+ * (e.g., "ADMIN", "WORKFLOW_MANAGER") that you define in your application.properties
+ * via 'conductor.security.role.*' properties.
+ */
+@Configuration
+public class JwtTokenConverterConfig {
 
-    private final AuthorizationDAO authorizationDAO;
-    private final MetadataDAO metadataDAO; // To look up workflow defs by name/version
-    private final WorkflowService workflowService; // To look up workflow instances by ID
+    private final SecurityRulesConfig securityRulesConfig;
 
-    @Autowired
-    public WorkflowAuthorizationService(AuthorizationDAO authorizationDAO, MetadataDAO metadataDAO, WorkflowService workflowService) {
-        this.authorizationDAO = authorizationDAO;
-        this.metadataDAO = metadataDAO;
-        this.workflowService = workflowService;
+    public JwtTokenConverterConfig(SecurityRulesConfig securityRulesConfig) {
+        this.securityRulesConfig = securityRulesConfig;
+    }
+
+    @Bean
+    public JwtAuthenticationConverter jwtAuthenticationConverter() {
+        JwtGrantedAuthoritiesConverter grantedAuthoritiesConverter = new JwtGrantedAuthoritiesConverter();
+        // You can customize the authority prefix if needed, e.g., "ROLE_" (default)
+        // grantedAuthoritiesConverter.setAuthorityPrefix("ROLE_");
+
+        JwtAuthenticationConverter jwtConverter = new JwtAuthenticationConverter();
+        jwtConverter.setJwtGrantedAuthoritiesConverter(jwt -> {
+            Collection<GrantedAuthority> authorities = grantedAuthoritiesConverter.convert(jwt);
+            authorities.addAll(extractCustomAuthorities(jwt));
+            return authorities;
+        });
+        return jwtConverter;
     }
 
     /**
-     * Grants a specific permission level for a workflow definition to a subject.
-     * Called by your custom admin API or internally when a workflow is created.
+     * Extracts custom authorities from the JWT, potentially mapping them
+     * based on your `securityRulesConfig.getRole()` map.
+     * This is where you'd bridge your raw JWT roles to the conceptual roles
+     * used in your security rules.
+     *
+     * @param jwt The JWT token.
+     * @return A collection of GrantedAuthority objects.
      */
-    public void grantPermission(Long workflowDefId, String subjectType, String subjectId, PermissionLevel permissionLevel, String grantedByUserId) {
-        WorkflowAclEntity aclEntry = new WorkflowAclEntity(workflowDefId, subjectType, subjectId, permissionLevel, grantedByUserId);
-        authorizationDAO.insertPermission(aclEntry);
-    }
+    private Collection<? extends GrantedAuthority> extractCustomAuthorities(Jwt jwt) {
+        Set<String> extractedRoles = new HashSet<>();
 
-    /**
-     * Checks if the current authenticated subject (user, group, or role) has the required permission
-     * for a workflow definition specified by name and version.
-     * This method is called by @PreAuthorize.
-     */
-    public boolean hasPermission(String workflowDefName, Integer workflowDefVersion, PermissionLevel requiredPermission) {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        if (authentication == null || !authentication.isAuthenticated()) {
-            return false;
-        }
+        // Extract roles from 'realm_access.roles'
+        Optional.ofNullable(jwt.getClaimAsMap("realm_access"))
+                .map(realmAccess -> (List<String>) realmAccess.get("roles"))
+                .orElse(List.of())
+                .forEach(extractedRoles::add);
 
-        String currentSubjectId;
-        List<String> currentSubjectGroups;
-        List<String> currentSubjectRoles;
+        // Extract roles from 'resource_access.account.roles' (or other resource access claims)
+        Optional.ofNullable(jwt.getClaimAsMap("resource_access"))
+                .map(resourceAccess -> (Map<String, List<String>>) resourceAccess.get("account"))
+                .map(account -> account.get("roles"))
+                .orElse(List.of())
+                .forEach(extractedRoles::add);
 
-        if (authentication.getPrincipal() instanceof Jwt) {
-            Jwt jwt = (Jwt) authentication.getPrincipal();
-            currentSubjectId = jwt.getSubject();
-            currentSubjectGroups = extractGroupsFromJwt(jwt);
-            currentSubjectRoles = extractRolesFromJwt(jwt);
-        } else {
-            currentSubjectId = authentication.getName();
-            currentSubjectGroups = extractGroupsFromAuthorities(authentication);
-            currentSubjectRoles = extractRolesFromAuthorities(authentication);
-        }
+        // Map extracted raw roles to your defined conceptual roles
+        // This is where the `securityRulesConfig.getRole()` map comes into play
+        return extractedRoles.stream()
+                .map(rawRole -> {
+                    // Check if there's a specific mapping for this raw role
+                    // If not, use the raw role directly or apply a default prefix
+                    String mappedRole = securityRulesConfig.getRole().entrySet().stream()
+                            .filter(entry -> entry.getValue().equalsIgnoreCase(rawRole)) // Find if the raw role is a value in your map
+                            .map(Map.Entry::getValue) // Get the mapped value (e.g., "ADMIN")
+                            .findFirst()
+                            .orElse(rawRole.toUpperCase()); // Fallback to uppercase raw role if no explicit mapping
 
-        Optional<Long> workflowDefIdOptional = authorizationDAO.getWorkflowDefIdByNameAndVersion(workflowDefName, workflowDefVersion);
-
-        if (workflowDefIdOptional.isEmpty()) {
-            return false; // Workflow definition not found, deny by default
-        }
-        Long workflowDefId = workflowDefIdOptional.get();
-
-        // 1. Check direct user permissions
-        if (authorizationDAO.checkDirectPermission(workflowDefId, "USER", currentSubjectId, requiredPermission)) {
-            return true;
-        }
-
-        // 2. Check group permissions
-        for (String groupId : currentSubjectGroups) {
-            if (authorizationDAO.checkDirectPermission(workflowDefId, "GROUP", groupId, requiredPermission)) {
-                return true;
-            }
-        }
-
-        // 3. Check role permissions (these are also typically from JWT claims)
-        for (String roleId : currentSubjectRoles) {
-            if (authorizationDAO.checkDirectPermission(workflowDefId, "ROLE", roleId, requiredPermission)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * @PreAuthorize helper for checking permission to create a workflow.
-     * If the workflow definition already exists, it checks EXECUTE permission.
-     * If it's a new definition, it checks a broad 'CREATE_WORKFLOW_DEF' role.
-     */
-    public boolean canCreateWorkflow(String workflowDefName, Integer workflowDefVersion) {
-        // If workflow definition already exists, check EXECUTE permission (to start an instance)
-        if (authorizationDAO.getWorkflowDefIdByNameAndVersion(workflowDefName, workflowDefVersion).isPresent()) {
-            return hasPermission(workflowDefName, workflowDefVersion, PermissionLevel.EXECUTE);
-        }
-
-        // If workflow definition does not exist (new creation), check if the user has a general "CREATE_WORKFLOW_DEF" role
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        List<String> currentSubjectRoles = Collections.emptyList();
-        if (authentication.getPrincipal() instanceof Jwt) {
-            currentSubjectRoles = extractRolesFromJwt((Jwt) authentication.getPrincipal());
-        } else {
-            currentSubjectRoles = extractRolesFromAuthorities(authentication);
-        }
-        // This assumes 'CREATE_WORKFLOW_DEF' is a specific role in Keycloak for creating new definitions
-        return currentSubjectRoles.contains("CREATE_WORKFLOW_DEF");
-    }
-
-    /**
-     * @PreAuthorize helper for checking permission to read (view) a workflow instance.
-     * Derives workflow definition details from the instance ID and checks READ permission.
-     */
-    public boolean canReadWorkflow(String workflowInstanceId) {
-        try {
-            // Fetch the workflow instance to get its definition name and version
-            // This might involve calling WorkflowService.getWorkflow(workflowInstanceId, false)
-            // and then inspecting the Workflow object.
-            // For this example, we assume workflowService can get WorkflowDef for the instance.
-            com.netflix.conductor.common.run.Workflow workflow = workflowService.getWorkflow(workflowInstanceId, false);
-            if (workflow == null) return false;
-
-            return hasPermission(workflow.getWorkflowName(), workflow.getWorkflowVersion(), PermissionLevel.READ);
-        } catch (Exception e) {
-            // Log the error (e.g., workflow not found, permission check failed)
-            System.err.println("Error checking read permission for workflow instance " + workflowInstanceId + ": " + e.getMessage());
-            return false;
-        }
-    }
-
-    /**
-     * @PreAuthorize helper for checking permission to update a workflow definition.
-     */
-    public boolean canUpdateWorkflowDef(String workflowDefName, Integer workflowDefVersion) {
-        return hasPermission(workflowDefName, workflowDefVersion, PermissionLevel.UPDATE);
-    }
-
-    /**
-     * @PreAuthorize helper for checking permission to delete a workflow definition.
-     */
-    public boolean canDeleteWorkflowDef(String workflowDefName, Integer workflowDefVersion) {
-        return hasPermission(workflowDefName, workflowDefVersion, PermissionLevel.DELETE);
-    }
-
-    /**
-     * @PreAuthorize helper for checking permission to terminate a workflow instance.
-     */
-    public boolean canTerminateWorkflow(String workflowInstanceId) {
-        try {
-            com.netflix.conductor.common.run.Workflow workflow = workflowService.getWorkflow(workflowInstanceId, false);
-            if (workflow == null) return false;
-            return hasPermission(workflow.getWorkflowName(), workflow.getWorkflowVersion(), PermissionLevel.DELETE); // Terminate usually requires DELETE or a specific "TERMINATE" permission
-        } catch (Exception e) {
-            System.err.println("Error checking terminate permission for workflow instance " + workflowInstanceId + ": " + e.getMessage());
-            return false;
-        }
-    }
-
-
-    // --- JWT Claim Extraction Helpers (crucial for Keycloak integration) ---
-    // Ensure these correctly extract roles/groups from your Keycloak JWT structure.
-    private List<String> extractGroupsFromJwt(Jwt jwt) {
-        List<String> groups = jwt.getClaimAsStringList("groups"); // Common claim for groups from Keycloak
-        if (groups == null && jwt.hasClaim("realm_access")) { // Fallback to realm_access roles if groups not found
-            Map<String, Object> realmAccess = jwt.getClaimAsMap("realm_access");
-            if (realmAccess != null && realmAccess.containsKey("roles")) {
-                groups = (List<String>) realmAccess.get("roles");
-            }
-        }
-        return groups != null ? groups : Collections.emptyList();
-    }
-
-    private List<String> extractRolesFromJwt(Jwt jwt) {
-        List<String> roles = jwt.getClaimAsStringList("scope"); // Often scopes are directly roles
-        if (roles == null && jwt.hasClaim("realm_access")) { // Fallback to realm_access roles
-            Map<String, Object> realmAccess = jwt.getClaimAsMap("realm_access");
-            if (realmAccess != null && realmAccess.containsKey("roles")) {
-                roles = (List<String>) realmAccess.get("roles");
-            }
-        }
-        if (roles == null && jwt.hasClaim("resource_access")) { // Check client-specific roles
-            Map<String, Object> resourceAccess = jwt.getClaimAsMap("resource_access");
-            // Replace 'your-client-id' with the actual client ID configured in Keycloak
-            if (resourceAccess != null && resourceAccess.containsKey("your-client-id")) {
-                Map<String, Object> clientRoles = (Map<String, Object>) resourceAccess.get("your-client-id");
-                if (clientRoles != null && clientRoles.containsKey("roles")) {
-                    List<String> clientSpecificRoles = (List<String>) clientRoles.get("roles");
-                    if (roles == null) roles = new ArrayList<>(); // Initialize if null
-                    roles.addAll(clientSpecificRoles);
-                }
-            }
-        }
-        return roles != null ? roles : Collections.emptyList();
-    }
-
-    // Fallback if principal is not Jwt, or if custom UserDetails populates authorities
-    private List<String> extractGroupsFromAuthorities(Authentication authentication) {
-        return authentication.getAuthorities().stream()
-                .map(GrantedAuthority::getAuthority)
-                .filter(a -> a.startsWith("GROUP_")) // Assuming Spring Security prefixes groups
-                .map(a -> a.substring("GROUP_".length()))
-                .collect(Collectors.toList());
-    }
-
-    private List<String> extractRolesFromAuthorities(Authentication authentication) {
-        return authentication.getAuthorities().stream()
-                .map(GrantedAuthority::getAuthority)
-                .filter(a -> a.startsWith("ROLE_") || a.startsWith("SCOPE_")) // Assuming Spring Security prefixes roles/scopes
-                .map(a -> a.substring(a.indexOf("_") + 1))
-                .collect(Collectors.toList());
+                    // Ensure the role has the "ROLE_" prefix for Spring Security
+                    return new SimpleGrantedAuthority("ROLE_" + mappedRole);
+                })
+                .collect(Collectors.toSet());
     }
 }
+```java
+// src/main/java/com/netflix/conductor/rest/controller/WorkflowController.java
+package com.netflix.conductor.rest.controller;
 
-
-
-
-
-// Modified com.netflix.conductor.rest.controllers.MetadataResource.java
-// (Conceptual modifications)
-package com.netflix.conductor.rest.controllers;
-
-import com.netflix.conductor.service.MetadataService;
-import com.netflix.conductor.security.workflowacl.service.WorkflowAuthorizationService; // Your custom service
-import com.netflix.conductor.security.workflowacl.model.PermissionLevel; // Import enum
-import com.netflix.conductor.common.metadata.workflow.WorkflowDef;
-import com.netflix.conductor.client.exception.ConductorClientException;
-
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.HttpStatus;
-import org.springframework.security.access.prepost.PreAuthorize;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.oauth2.jwt.Jwt;
-
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
-import java.util.stream.Collectors;
-
-@RestController
-@RequestMapping(value = RequestMappingConstants.METADATA_API_PATH)
-public class MetadataResource {
-
-    private final MetadataService metadataService;
-    private final WorkflowAuthorizationService workflowAuthorizationService;
-
-    @Autowired
-    public MetadataResource(MetadataService metadataService, WorkflowAuthorizationService workflowAuthorizationService) {
-        this.metadataService = metadataService;
-        this.workflowAuthorizationService = workflowAuthorizationService;
-    }
-
-    /**
-     * Register a new workflow definition or update an existing one.
-     * The @PreAuthorize checks if the user has permission to perform this action.
-     * After successful registration/update, it ensures owner permissions are set in ACL.
-     */
-    @PostMapping(value = "/workflow")
-    @ResponseStatus(HttpStatus.NO_CONTENT)
-    // Assuming 'canCreateWorkflow' check will verify if it's a new creation or requires 'EXECUTE' for existing.
-    @PreAuthorize("@workflowAuthorization.canCreateWorkflow(#workflowDef.name, #workflowDef.version)")
-    public void registerWorkflowDef(@RequestBody WorkflowDef workflowDef) {
-        // 1. Get current authenticated user details from Keycloak JWT
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        String currentSubjectId;
-        // The principal should be Jwt due to Keycloak integration
-        if (authentication.getPrincipal() instanceof Jwt) {
-            currentSubjectId = ((Jwt) authentication.getPrincipal()).getSubject();
-        } else {
-            currentSubjectId = authentication.getName(); // Fallback if principal type is different
-        }
-
-        // 2. Perform the actual workflow definition registration
-        // This is the original Conductor OSS logic that saves/updates the workflowDef in meta_workflow_def
-        metadataService.registerWorkflowDef(workflowDef);
-
-        // 3. Add permission entries to workflow_acl for the creator/owner
-        Long workflowDefId = workflowAuthorizationService.getWorkflowDefId(workflowDef.getName(), workflowDef.getVersion());
-
-        if (workflowDefId != null) {
-            // Grant creator all permissions by default (Owner)
-            workflowAuthorizationService.grantPermission(workflowDefId, "USER", currentSubjectId, PermissionLevel.CREATE, currentSubjectId);
-            workflowAuthorizationService.grantPermission(workflowDefId, "USER", currentSubjectId, PermissionLevel.READ, currentSubjectId);
-            workflowAuthorizationService.grantPermission(workflowDefId, "USER", currentSubjectId, PermissionLevel.UPDATE, currentSubjectId);
-            workflowAuthorizationService.grantPermission(workflowDefId, "USER", currentSubjectId, PermissionLevel.DELETE, currentSubjectId);
-            workflowAuthorizationService.grantPermission(workflowDefId, "USER", currentSubjectId, PermissionLevel.EXECUTE, currentSubjectId);
-
-            // You might add logic here to grant default permissions to groups/roles
-            // For example, if a "workflow-creators" group automatically gets READ access
-            // List<String> currentSubjectGroups = extractGroupsFromJwt((Jwt)authentication.getPrincipal());
-            // if (currentSubjectGroups.contains("workflow-creators")) {
-            //    workflowAuthorizationService.grantPermission(workflowDefId, "GROUP", "workflow-creators", PermissionLevel.READ, currentSubjectId);
-            // }
-
-        } else {
-            // This scenario should ideally not happen if registerWorkflowDef was successful
-            throw new ConductorClientException("Internal Error: Workflow definition ID not found for ACL setup after creation.");
-        }
-    }
-
-    /**
-     * Update an existing workflow definition.
-     * Requires 'UPDATE' permission on the specific workflow definition.
-     */
-    @PutMapping(value = "/workflow")
-    @ResponseStatus(HttpStatus.NO_CONTENT)
-    @PreAuthorize("@workflowAuthorization.canUpdateWorkflowDef(#workflowDef.name, #workflowDef.version)")
-    public void updateWorkflowDef(@RequestBody WorkflowDef workflowDef) {
-        metadataService.updateWorkflowDefs(Collections.singletonList(workflowDef));
-        // No need to re-add owner permissions here, as they should already exist.
-        // If updating owner, that would be a separate ACL management API.
-    }
-
-    /**
-     * Get a workflow definition by name and version.
-     * Requires 'READ' permission.
-     */
-    @GetMapping(value = "/workflow/{name}/{version}")
-    @ResponseStatus(HttpStatus.OK)
-    @PreAuthorize("@workflowAuthorization.hasPermission(#name, #version, T(com.netflix.conductor.security.workflowacl.model.PermissionLevel).READ)")
-    public WorkflowDef getWorkflowDef(
-            @PathVariable("name") String name,
-            @PathVariable("version") Integer version
-    ) {
-        return metadataService.getWorkflowDef(name, version);
-    }
-
-    /**
-     * Delete a workflow definition.
-     * Requires 'DELETE' permission.
-     */
-    @DeleteMapping(value = "/workflow/{name}/{version}")
-    @ResponseStatus(HttpStatus.NO_CONTENT)
-    @PreAuthorize("@workflowAuthorization.hasPermission(#name, #version, T(com.netflix.conductor.security.workflowacl.model.PermissionLevel).DELETE)")
-    public void unregisterWorkflowDef(
-            @PathVariable("name") String name,
-            @PathVariable("version") Integer version
-    ) {
-        metadataService.unregisterWorkflowDef(name, version);
-        // Optional: Also delete all related ACL entries from workflow_acl table
-        // authorizationService.deleteAllPermissionsForWorkflowDef(workflowDefId);
-    }
-
-    // --- JWT Claim Extraction Helpers (copy from WorkflowAuthorizationService or a shared utility) ---
-    private List<String> extractGroupsFromJwt(Jwt jwt) { /* ... */ return Collections.emptyList(); }
-    private List<String> extractRolesFromJwt(Jwt jwt) { /* ... */ return Collections.emptyList(); }
-    private List<String> extractGroupsFromAuthorities(Authentication authentication) { /* ... */ return Collections.emptyList(); }
-    private List<String> extractRolesFromAuthorities(Authentication authentication) { /* ... */ return Collections.emptyList(); }
-}
-
-
-
-++++++++
-
-
-// Modified com.netflix.conductor.rest.controllers.WorkflowResource.java
-// (Conceptual modifications)
-        package com.netflix.conductor.rest.controllers;
-
-import com.netflix.conductor.service.WorkflowService;
-import com.netflix.conductor.security.workflowacl.service.WorkflowAuthorizationService; // Your custom service
-import com.netflix.conductor.security.workflowacl.model.PermissionLevel; // Import enum
-import com.netflix.conductor.common.metadata.workflow.StartWorkflowRequest;
-import com.netflix.conductor.common.run.Workflow; // Used for Workflow instances
-
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.HttpStatus;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
-// ... other imports ...
-
+/**
+ * Example Controller demonstrating the usage of @PreAuthorize annotation
+ * with the custom permission evaluator.
+ */
 @RestController
-@RequestMapping(value = RequestMappingConstants.WORKFLOW_API_PATH)
-public class WorkflowResource {
+@RequestMapping("/api/workflow")
+public class WorkflowController {
 
-    private final WorkflowService workflowService;
-    private final WorkflowAuthorizationService workflowAuthorizationService; // Renamed for clarity
-
-    @Autowired
-    public WorkflowResource(WorkflowService workflowService, WorkflowAuthorizationService workflowAuthorizationService) {
-        this.workflowService = workflowService;
-        this.workflowAuthorizationService = workflowAuthorizationService;
+    @GetMapping("/{workflowId}")
+    @PreAuthorize("hasPermission('/api/workflow/**', 'READ')")
+    public String getWorkflow(@PathVariable String workflowId) {
+        return "Fetching workflow: " + workflowId;
     }
 
-    /**
-     * Start a new workflow instance.
-     * Requires 'EXECUTE' permission on the specific workflow definition.
-     */
     @PostMapping
-    @ResponseStatus(HttpStatus.OK)
-    @PreAuthorize("@workflowAuthorization.hasPermission(#startWorkflowRequest.name, #startWorkflowRequest.version, T(com.netflix.conductor.security.workflowacl.model.PermissionLevel).EXECUTE)")
-    public String startWorkflow(@RequestBody StartWorkflowRequest startWorkflowRequest) {
-        return workflowService.startWorkflow(startWorkflowRequest);
+    @PreAuthorize("hasPermission('/api/workflow/**', 'CREATE')")
+    public String createWorkflow(@RequestBody String workflowData) {
+        return "Creating workflow with data: " + workflowData;
     }
+
+    @PutMapping("/{workflowId}")
+    @PreAuthorize("hasPermission('/api/workflow/**', 'UPDATE')")
+    public String updateWorkflow(@PathVariable String workflowId, @RequestBody String workflowData) {
+        return "Updating workflow: " + workflowId + " with data: " + workflowData;
+    }
+
+    @DeleteMapping("/{workflowId}")
+    @PreAuthorize("hasPermission('/api/workflow/**', 'DELETE')")
+    public String deleteWorkflow(@PathVariable String workflowId) {
+        return "Deleting workflow: " + workflowId;
+    }
+
+    @GetMapping("/bulk")
+    @PreAuthorize("hasPermission('/api/workflow/bulk/**', 'READ')")
+    public String getBulkWorkflows() {
+        return "Fetching bulk workflows.";
+    }
+
+    @PostMapping("/bulk")
+    @PreAuthorize("hasPermission('/api/workflow/bulk/**', 'CREATE')")
+    public String createBulkWorkflows(@RequestBody String bulkData) {
+        return "Creating bulk workflows with data: " + bulkData;
+    }
+
+    @GetMapping("/admin/config")
+    @PreAuthorize("hasPermission('/api/admin/**', 'READ')")
+    public String getAdminConfig() {
+        return "Accessing admin configuration.";
+    }
+}
+```properties
+# src/main/resources/application.properties
+# --- Security Rules Configuration ---
+conductor.security.rules[0].path=/api/admin/**
+ conductor.security.rules[0].roles=admin
+ conductor.security.rules[0].methods=GET,POST,PUT,DELETE
+
+ conductor.security.rules[1].path=/api/queue/**
+ conductor.security.rules[1].roles=admin,app_admin
+ conductor.security.rules[1].methods=GET,POST,PUT,DELETE
+
+ conductor.security.rules[2].path=/api/workflow/bulk/**
+ conductor.security.rules[2].roles=workflow_manager,admin,app_workflow_manager,app_admin
+ conductor.security.rules[2].methods=GET,POST,PUT,DELETE
+
+ conductor.security.rules[3].path=/api/workflow/**
+ conductor.security.rules[3].roles=read_only_user,workflow_manager,admin,unrestricted_worker,app_workflow_manager,app_admin
+ conductor.security.rules[3].methods=GET
+
+ conductor.security.rules[4].path=/api/workflow/**
+ conductor.security.rules[4].roles=workflow_manager,admin,unrestricted_worker,app_workflow_manager,app_admin
+ conductor.security.rules[4].methods=POST,PUT,DELETE
+
+ # --- Role Mappings (Actual role strings that your JWT will provide) ---
+ # These values should match the actual roles present in the JWT claims
+ conductor.security.role.admin=ADMIN
+ conductor.security.role.app_admin=APP_ADMIN
+ conductor.security.role.read_only_user=READ_ONLY_USER
+ conductor.security.role.workflow_manager=WORKFLOW_MANAGER
+ conductor.security.role.unrestricted_worker=UNRESTRICTED_WORKER
+ conductor.security.role.app_workflow_manager=APP_WORKFLOW_MANAGER
+
+ # Spring Security JWT configuration (example, adjust as per your OIDC provider)
+ spring.security.oauth2.resourceserver.jwt.issuer-uri=http://localhost:8080/realms/microtx # Replace with your actual Keycloak/OIDC issuer URI
+
+
+
+
+
+
+ // src/main/java/com/netflix/conductor/security/config/ConductorPermission.java
+ package com.netflix.conductor.security.config;
+
+ import java.util.Arrays;
+ import java.util.List;
+ import java.util.Set;
+ import java.util.stream.Collectors;
+
+ /**
+ * Defines the high-level permissions for Conductor resources.
+ * These map to typical CRUD operations and can be extended.
+ */
+public enum ConductorPermission {
+    READ,
+    CREATE,
+    UPDATE,
+    DELETE,
+    EXECUTE; // Example for specific actions like executing a workflow
 
     /**
-     * Retrieve a workflow instance by workflow ID.
-     * Requires 'READ' permission on the workflow definition associated with the instance.
+     * Converts a list of HTTP methods (e.g., "GET", "POST") into a set of ConductorPermissions.
+     * This mapping is crucial for the PermissionEvaluator.
+     *
+     * @param httpMethods A list of HTTP method strings (e.g., "GET", "POST", "PUT", "DELETE").
+     * @return A Set of corresponding ConductorPermission enums.
      */
-    @GetMapping(value = "/{workflowId}")
-    @ResponseStatus(HttpStatus.OK)
-    @PreAuthorize("@workflowAuthorization.canReadWorkflow(#workflowId)") // Custom helper method in service
-    public Workflow getWorkflow(
-            @PathVariable("workflowId") String workflowId,
-            @RequestParam(value = "includeTasks", defaultValue = "true") boolean includeTasks
-    ) {
-        return workflowService.getWorkflow(workflowId, includeTasks);
+    public static Set<ConductorPermission> fromHttpMethods(List<String> httpMethods) {
+        if (httpMethods == null || httpMethods.isEmpty()) {
+            return Set.of(); // No methods specified, no permissions
+        }
+        return httpMethods.stream()
+                .map(String::toUpperCase)
+                .flatMap(method -> {
+                    switch (method) {
+                        case "GET":
+                            return Set.of(READ).stream();
+                        case "POST":
+                            return Set.of(CREATE).stream();
+                        case "PUT":
+                            return Set.of(UPDATE).stream();
+                        case "DELETE":
+                            return Set.of(DELETE).stream();
+                        // Add more mappings if needed, e.g., for PATCH
+                        default:
+                            return Set.of().stream(); // Unrecognized method
+                    }
+                })
+                .collect(Collectors.toSet());
     }
-
-    /**
-     * Terminate a workflow instance.
-     * Requires 'DELETE' permission on the workflow definition associated with the instance.
-     */
-    @DeleteMapping(value = "/{workflowId}")
-    @ResponseStatus(HttpStatus.NO_CONTENT)
-    @PreAuthorize("@workflowAuthorization.canTerminateWorkflow(#workflowId)") // Custom helper method in service
-    public void terminateWorkflow(
-            @PathVariable("workflowId") String workflowId,
-            @RequestParam(value = "reason", required = false) String reason
-    ) {
-        workflowService.terminateWorkflow(workflowId, reason);
-    }
-
-    // You would continue applying @PreAuthorize to other methods in WorkflowResource
-    // that involve interacting with specific workflow instances or definitions.
-    // Example: pauseWorkflow, resumeWorkflow, rerunWorkflow, retryLastFailedTask etc.
-
-    // ... other controller methods ...
 }
