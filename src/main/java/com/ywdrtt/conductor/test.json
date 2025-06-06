@@ -1,0 +1,54 @@
+{
+  "name": "MyTestWorkflow",
+  "version": 1,
+  "description": "Workflow to test secret replacement: ${workflow.secrets.my_secret}",
+  "ownerEmail": "user@example.com",
+  "failureWorkflow": "errorHandler-${workflow.secrets.my_secret}",
+  "metadata": {
+    "sampleData": "${workflow.secrets.my_sample}",
+    "nestedConfig": {
+      "key1": "value1",
+      "authHeader": "Bearer ${workflow.secrets.api_key}",
+      "list_of_items": [
+        "item1",
+        "item2",
+        "item_with_secret: ${workflow.secrets.db_password}"
+      ]
+    }
+  },
+  "tasks": [
+    {
+      "name": "http_task_with_auth",
+      "taskReferenceName": "http_task_ref",
+      "type": "HTTP",
+      "inputParameters": {
+        "http_request": {
+          "method": "GET",
+          "uri": "http://example.com/api/data",
+          "headers": {
+            "Authorization": "Bearer ${workflow.secrets.api_key}"
+          },
+          "body": {
+            "payload_data": "some value",
+            "nested_secret": "${workflow.secrets.my_secret}"
+          }
+        },
+        "another_secret_param": "${workflow.secrets.db_password}",
+        "param_list": [
+          "list_item_1",
+          "list_item_secret: ${workflow.secrets.my_sample}"
+        ]
+      }
+    },
+    {
+      "name": "simple_task_with_owner",
+      "taskReferenceName": "simple_task_ref",
+      "type": "SIMPLE",
+      "ownerEmail": "task_owner_${workflow.secrets.my_secret}@example.com"
+    }
+  ],
+  "inputParameters": [
+    "top_level_param_1",
+    "top_level_secret_param: ${workflow.secrets.api_key}"
+  ]
+}
